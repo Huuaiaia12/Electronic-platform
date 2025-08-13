@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>صمّم لي | تصميمات عصرية</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
+    body { font-family: 'Cairo', sans-serif; background-color: #f3f4f6; }
+    .animate-fadeIn { animation: fadeIn 0.5s ease-out forwards; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-spin-slow { animation: spin 3s linear infinite; }
+    .pulse-animation { animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+  </style>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, addDoc, setDoc, updateDoc, onSnapshot, collection, query, where, getDocs, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // المتغيرات العامة من البيئة
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
+
+    const adminPassword = "81562855"; // كلمة مرور المسؤول
+    const adminWhatsappNumber = "07818843499"; // رقم واتساب المسؤول
+
+    // تهيئة Firebase
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // مسارات Firestore
+    const publicPath = `/artifacts/${appId}/public/data`;
+    const usersCollectionRef = () => collection(db, `${publicPath}/users`);
+    const ordersCollectionRef = () => collection(db, `${publicPath}/orders`);
+    const itemsCollectionRef = () => collection(db, `${publicPath}/displayItems`);
+    const offersCollectionRef = () => collection(db, `${publicPath}/displayOffers`);
+
+    // إدارة الحالة
+    let user = null;
+    let isAdmin = false;
+    let loyaltyPoints = 0;
+    let itemsList = [];
+    let offersList = [];
+    let ordersList = [];
+    let isLoadingIdeas = false;
+    let isReadingStatus = false;
+    let generatedMoodboardUrl = null;
+    let isGeneratingMoodboard = false;
+    let isInitialized = false;
+    
+    // إلغاء اشتراكات المستمعين
+    let unsubscribeOrders = null;
+    let unsubscribeItems = null;
+    let unsubscribeOffers = null;
+    let unsubscribeUser = null;
+
+    // حالة الاختبار
+    let quizState = {
+        questionIndex: 0,
+        answers: {},
+        questions: [
+            {
+                id: 1,
+                text: "ما هو الغرض الرئيسي من تصميمك؟",
+                options: [
+                    { text: "نشر محتوى على وسائل التواصل الاجتماعي", value: "social_media" },
+                    { text: "الترويج لحدث أو عرض لفترة محدودة", value: "promotion" },
+                    { text: "بناء هوية بصرية لعلامة تجارية", value: "branding" },
+                ]
+            },
+            {
+                id: 2,
+                text: "ما هو الشكل الأنسب لعرض تصميمك؟",
+                options: [
+                    { text: "صورة ثابتة", value: "static_image" },
+                    { text: "فيديو قصير ومتحرك", value: "video" },
+                    { text: "حجم مخصص للقصص", value: "story_format" },
+                ]
+            },
+            {
+                id: 3,
+                text: "ما هو مستوى التفاصيل الذي تحتاجه في التصميم؟",
+                options: [
+                    { text: "بسيط وجذاب، مع نص وصورة", value: "simple" },
+                    { text: "متحرك ومعقد، مع صوتيات وتأثيرات", value: "complex" },
+                    { text: "هوية بصرية كاملة", value: "full_identity" },
+                ]
+            }
+        ],
+        results: {
+            'social_media_static_image_simple': 'تصميم بوست',
+            'social_media_static_image_complex': 'تصميم بوست',
+            'social_media_video_simple': 'تصميم ريلز',
+            'social_media_video_complex': 'تصميم ريلز',
+            'social_media_story_format_simple': 'تصميم ستوري',
+            'social_media_story_format_complex': 'تصميم ستوري',
+            'promotion_static_image_simple': 'تصميم بوست',
+            'promotion_video_complex': 'تصميم ريلز',
+            'branding_full_identity_simple': 'تصميم شعار',
+            'branding_full_identity_complex': 'تصميم شعار',
+        }
+    };
+
+
+    // عناصر واجهة المستخدم
+    const appContainer = document.getElementById('app-container');
+    const navBar = document.getElementById('navbar');
+    const notificationsContainer = document.getElementById('notifications-container');
+
+    // --- وظائف مساعدة ---
+    const showToast = (message, type = 'success') => {
+      const toast = document.createElement('div');
+      toast.className = `fixed bottom-4 left-4 p-4 rounded-lg shadow-lg text-white font-bold animate-fadeInOut z-[60]`;
+      if (type === 'success') toast.classList.add('bg-green-500');
+      if (type === 'error') toast.classList.add('bg-red-500');
+      if (type === 'info') toast.classList.add('bg-blue-500');
+      toast.textContent = message;
+      notificationsContainer.appendChild(toast);
+      setTimeout(() => {
+        toast.remove();
+      }, 5000);
+    };
+
+    const updateNavbar = () => {
+      navBar.innerHTML = `
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+          <a href="#" class="text-3xl font-bold text-gray-800" onclick="showView('home')">صمّم لي</a>
+          <div class="flex items-center space-x-4 space-x-reverse">
+            <button onclick="showView('home')" class="text-gray-600 hover:text-purple-600 font-medium transition">الرئيسية</button>
+            <button onclick="showView('order-form')" class="text-gray-600 hover:text-purple-600 font-medium transition">اطلب تصميم</button>
+            <button onclick="showView('my-orders')" class="text-gray-600 hover:text-purple-600 font-medium transition">طلباتي</button>
+            ${isAdmin ? `
+              <button onclick="showView('admin-dashboard')" class="bg-purple-600 text-white px-4 py-2 rounded-full hover:bg-purple-700 transition shadow-md">لوحة التحكم</button>
+            ` : `
+              <button onclick="showView('admin-login')" class="bg-gray-800 text-white px-4 py-2 rounded-full hover:bg-gray-900 transition shadow-md">مسؤول</button>
+            `}
+            ${user ? `
+              <button onclick="handleLogout()" class="bg-gray-400 text-white px-4 py-2 rounded-full hover:bg-gray-500 transition shadow-md">خروج</button>
+            ` : ''}
+          </div>
+        </div>
+      `;
+    };
+
+    const initializeData = async () => {
+        const services = [
+            { title: 'تصميم بوست', description: 'صورة ثابتة بجودة عالية', displayPrice: '4,000 د.ع' },
+            { title: 'تصميم ستوري', description: 'أبعاد مناسبة للقصص، نصوص وصور', displayPrice: '3,500 د.ع' },
+            { title: 'تصميم ريلز', description: 'فيديو قصير (10-30 ثانية) بصوتيات ونصوص', displayPrice: '8,000 د.ع' },
+            { title: 'تصميم شعار', description: 'ملف PNG + نسخة شفافة + مرفقات', displayPrice: '20,000 د.ع' },
+        ];
+        const offers = [
+            { title: 'باقات تصميم شهرية', description: '10 تصاميم (اختيارية)', displayPrice: '30,000 د.ع' },
+        ];
+
+        const checkAndAddItems = async (collectionRef, itemsToAdd) => {
+            const snapshot = await getDocs(collectionRef());
+            if (snapshot.empty) {
+                for (const item of itemsToAdd) {
+                    await addDoc(collectionRef(), item);
+                }
+            }
+        };
+
+        await checkAndAddItems(itemsCollectionRef, services);
+        await checkAndAddItems(offersCollectionRef, offers);
+    };
+
+    // --- وظائف Gemini API ---
+    const handleGenerateMoodboard = async (title, description, colors) => {
+      if (!title || !description) {
+        showToast('يُرجى إدخال عنوان ووصف للإعلان أولاً.', 'error');
+        return;
+      }
+      
+      isGeneratingMoodboard = true;
+      updateOrderForm();
+
+      const prompt = `Create a creative moodboard for a design project.
+      - Ad Title: ${title}
+      - Service Description: ${description}
+      - Colors: ${colors || 'Vibrant, modern colors.'}
+      - Style: A professional and engaging moodboard for a social media post, capturing the essence of the ad.
+      - Output: A realistic, high-quality image of the moodboard.`;
+      
+      const payload = { instances: { prompt: prompt }, parameters: { "sampleCount": 1} };
+      const apiKey = "";
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`;
+      
+      let response;
+      let retries = 3;
+      let delay = 1000;
+      while (retries > 0) {
+        try {
+          response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (response.status === 429) {
+            retries--;
+            await new Promise(resolve => setTimeout(resolve, delay));
+            delay *= 2;
+          } else {
+            break;
+          }
+        } catch (error) {
+          console.error("Fetch error:", error);
+          retries = 0;
+        }
+      }
+      
+      if (response) {
+        const result = await response.json();
+        if (result.predictions && result.predictions.length > 0 && result.predictions[0].bytesBase64Encoded) {
+          generatedMoodboardUrl = `data:image/png;base64,${result.predictions[0].bytesBase64Encoded}`;
+          showToast('تم توليد لوحة الأفكار بنجاح!', 'success');
+        } else {
+          console.error("Image generation failed:", result);
+          showToast('فشل توليد لوحة الأفكار، يرجى المحاولة مرة أخرى.', 'error');
+        }
+      } else {
+        showToast('فشل الاتصال بخدمة توليد الصور.', 'error');
+      }
+      
+      isGeneratingMoodboard = false;
+      updateOrderForm();
+    };
+
+    const handleReadStatus = async (status) => {
+      isReadingStatus = true;
+      updateViews();
+      
+      const base64ToArrayBuffer = (base64) => {
+        const binaryString = window.atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+      };
+
+      const pcmToWav = (pcm, sampleRate) => {
+        const buffer = new ArrayBuffer(44 + pcm.length * 2);
+        const view = new DataView(buffer);
+        writeString(view, 0, 'RIFF');
+        view.setUint32(4, 36 + pcm.length * 2, true);
+        writeString(view, 8, 'WAVE');
+        writeString(view, 12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        writeString(view, 36, 'data');
+        view.setUint32(40, pcm.length * 2, true);
+
+        let offset = 44;
+        for (let i = 0; i < pcm.length; i++, offset += 2) {
+          view.setInt16(offset, pcm[i], true);
+        }
+        return new Blob([view], { type: 'audio/wav' });
+      };
+
+      const writeString = (view, offset, string) => {
+        for (let i = 0; i < string.length; i++) {
+          view.setUint8(offset + i, string.charCodeAt(i));
+        }
+      };
+      
+      const prompt = `The current status of your order is: ${status}.`;
+      
+      const payload = {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Orus" } } }
+        },
+        model: "gemini-2.5-flash-preview-tts"
+      };
+
+      const apiKey = "";
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+
+      let response;
+      let retries = 3;
+      let delay = 1000;
+      while (retries > 0) {
+        try {
+          response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (response.status === 429) {
+            retries--;
+            await new Promise(resolve => setTimeout(resolve, delay));
+            delay *= 2;
+          } else {
+            break;
+          }
+        } catch (error) {
+          console.error("Fetch error:", error);
+          retries = 0;
+        }
+      }
+      
+      if (response) {
+        const result = await response.json();
+        const audioPart = result?.candidates?.[0]?.content?.parts?.[0];
+        const audioData = audioPart?.inlineData?.data;
+        const mimeType = audioPart?.inlineData?.mimeType;
+
+        if (audioData && mimeType && mimeType.startsWith("audio/")) {
+          const sampleRateMatch = mimeType.match(/rate=(\d+)/);
+          const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1], 10) : 16000;
+          
+          const pcmData = base64ToArrayBuffer(audioData);
+          const pcm16 = new Int16Array(pcmData);
+          const wavBlob = pcmToWav(pcm16, sampleRate);
+          const audioUrl = URL.createObjectURL(wavBlob);
+          
+          const audio = new Audio(audioUrl);
+          audio.onended = () => {
+            isReadingStatus = false;
+            updateViews();
+          };
+          audio.onerror = () => {
+            console.error("Audio playback error");
+            isReadingStatus = false;
+            updateViews();
+          };
+          audio.play();
+        } else {
+          console.error("Unexpected API response structure or missing audio data.");
+          showToast('حدث خطأ في قراءة الحالة صوتياً.', 'error');
+          isReadingStatus = false;
+          updateViews();
+        }
+      } else {
+        showToast('فشل الاتصال بخدمة TTS.', 'error');
+        isReadingStatus = false;
+        updateViews();
+      }
+    };
+    
+    // --- وظائف عرض الواجهة ---
+    const showView = (viewName, data = null) => {
+      appContainer.innerHTML = '';
+      appContainer.dataset.currentView = viewName;
+      switch (viewName) {
+        case 'home':
+          renderHomeView();
+          break;
+        case 'order-form':
+          renderOrderFormView(data);
+          break;
+        case 'design-quiz':
+          renderDesignQuizView();
+          break;
+        case 'my-orders':
+          renderMyOrdersView();
+          break;
+        case 'admin-login':
+          renderAdminLoginView();
+          break;
+        case 'admin-dashboard':
+          if (isAdmin) {
+            renderAdminDashboardView();
+          } else {
+            renderAdminLoginView();
+          }
+          break;
+      }
+    };
+    
+    const updateViews = () => {
+      const currentView = appContainer.dataset.currentView;
+      if (currentView) showView(currentView);
+    };
+
+    const renderHomeView = () => {
+      appContainer.innerHTML = `
+        <section class="bg-gradient-to-br from-purple-800 to-indigo-900 text-white py-20 px-6 animate-fadeIn">
+          <div class="container mx-auto text-center">
+            <h1 class="text-4xl md:text-6xl font-extrabold mb-4 drop-shadow-lg">تصاميم احترافية بلمسة زر</h1>
+            <p class="text-lg md:text-2xl mb-8 opacity-90">نقدم لك أفضل خدمات التصميم لتلبية احتياجاتك، من البوستات إلى الشعارات.</p>
+            <div class="bg-white text-purple-600 px-4 py-2 rounded-full inline-block font-bold mb-4 shadow-lg">
+              لديك ${loyaltyPoints} نقطة ولاء.
+            </div>
+            <div class="flex flex-col md:flex-row justify-center items-center gap-4 mt-8">
+                <button onclick="showView('order-form')" class="bg-purple-500 text-white px-8 py-3 rounded-full text-lg font-bold hover:bg-purple-600 transition shadow-lg w-full md:w-auto">اطلب تصميم الآن</button>
+                <button onclick="showView('design-quiz')" class="bg-gray-700 text-white px-8 py-3 rounded-full text-lg font-bold hover:bg-gray-800 transition shadow-lg w-full md:w-auto">اختبار أي تصميم يناسبك؟</button>
+            </div>
+            <div class="mt-12 text-sm opacity-80">
+              <p>للاستفسارات، تواصل معنا عبر واتساب:</p>
+              <a href="https://wa.me/${adminWhatsappNumber}" target="_blank" class="text-white hover:underline font-bold">${adminWhatsappNumber}</a>
+            </div>
+          </div>
+        </section>
+        
+        <section class="py-16 px-6 bg-gray-100 animate-fadeIn">
+          <div class="container mx-auto">
+            <h2 class="text-3xl md:text-4xl font-bold text-center text-gray-800 mb-12">خدماتنا وعروضنا</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+              ${[...itemsList, ...offersList].map(item => `
+                <div class="bg-white p-6 rounded-xl shadow-lg hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-2">
+                  <h3 class="text-2xl font-bold text-gray-800 mb-2">${item.title}</h3>
+                  <p class="text-gray-600 mb-4">${item.description}</p>
+                  <span class="bg-purple-100 text-purple-600 font-bold px-4 py-1 rounded-full">${item.displayPrice}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </section>
+      `;
+    };
+
+    const renderOrderFormView = (preselectedDesign = null) => {
+      const allItems = [...itemsList, ...offersList];
+      
+      appContainer.innerHTML = `
+        <section class="py-20 px-6 bg-gray-100 animate-fadeIn">
+          <div class="container mx-auto max-w-4xl">
+            <div class="bg-white p-8 rounded-2xl shadow-xl">
+              <h2 class="text-3xl font-bold text-center mb-8 text-gray-800">نموذج طلب تصميم</h2>
+              <form id="order-form-el">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div class="space-y-4">
+                    <div>
+                      <label for="design-type" class="block text-gray-700 font-bold mb-2">نوع التصميم</label>
+                      <select id="design-type" name="design-type" class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600" required>
+                        <option value="" disabled selected>اختر نوع التصميم</option>
+                        ${allItems.map(item => `<option value="${item.title}" data-price="${item.displayPrice}" data-description="${item.description}" ${preselectedDesign === item.title ? 'selected' : ''}>${item.title}</option>`).join('')}
+                      </select>
+                      <div id="design-details" class="mt-2 text-sm text-gray-600 p-2 bg-purple-50 rounded-lg hidden"></div>
+                    </div>
+                    <div>
+                      <label for="ad-title" class="block text-gray-700 font-bold mb-2">عنوان الإعلان</label>
+                      <input type="text" id="ad-title" name="ad-title" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="مثال: إعلان لمطعم جديد" required />
+                    </div>
+                    <div>
+                      <label for="user-whatsapp" class="block text-gray-700 font-bold mb-2">رقم واتساب <span class="text-red-500">*</span></label>
+                      <input type="tel" id="user-whatsapp" name="user-whatsapp" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="مثال: 07812345678" required />
+                      <p class="text-xs text-gray-500 mt-1">سيتم التواصل معك عبر هذا الرقم لاستلام التصميم</p>
+                    </div>
+                    <div>
+                      <label for="description" class="block text-gray-700 font-bold mb-2">وصف الخدمة</label>
+                      <textarea id="description" name="description" rows="4" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="اكتب تفاصيل الخدمة أو النشاط هنا..." required></textarea>
+                    </div>
+                  </div>
+                  
+                  <div class="space-y-4">
+                    <div>
+                      <label for="colors" class="block text-gray-700 font-bold mb-2">الألوان المطلوبة</label>
+                      <input type="text" id="colors" name="colors" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="مثال: أزرق، أبيض، ذهبي..." />
+                    </div>
+                    <div>
+                      <label class="block text-gray-700 font-bold mb-2">طريقة الدفع <span class="text-red-500">*</span></label>
+                      <select id="payment-method" name="payment-method" class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600" required>
+                        <option value="" disabled selected>اختر طريقة الدفع</option>
+                        <option value="زين كاش">زين كاش</option>
+                        <option value="ماستر كارد">ماستر كارد</option>
+                        <option value="رصيد">رصيد</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label for="payment-receipt" class="block text-gray-700 font-bold mb-2">رابط وصل التحويل (اختياري)</label>
+                      <input type="url" id="payment-receipt" name="payment-receipt" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="مثال: https://imgur.com/receipt.jpg" />
+                      <p class="text-xs text-gray-500 mt-1">يُرجى إرفاق صورة لوصل الدفع لتسهيل عملية المراجعة</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="flex justify-center mt-8">
+                    <button
+                        type="button"
+                        id="generate-moodboard-btn"
+                        class="bg-purple-600 text-white p-3 rounded-full font-bold hover:bg-purple-700 transition shadow-lg flex items-center justify-center space-x-2 space-x-reverse min-w-[250px]"
+                    >
+                        ${isGeneratingMoodboard ? `
+                            <svg class="animate-spin-slow h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span>جاري توليد لوحة الأفكار...</span>
+                        ` : `
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-paintbrush"><path d="M18.37 2.63L14.33 6.67l-1.07 1.07a4.5 4.5 0 01-6.36 0L1.75 12.16a2 2 0 00-.58 1.43V22a2 2 0 002 2h6.41a2 2 0 001.42-.58l7.2-7.21a4.5 4.5 0 010-6.36l-1.07-1.07z"/><path d="M5.5 12.5l5-5"/></svg>
+                            <span>مولّد لوحة الأفكار بالذكاء الاصطناعي</span>
+                        `}
+                    </button>
+                </div>
+                
+                <div id="moodboard-container" class="mt-8"></div>
+                
+                <button type="submit" id="submit-order-btn" class="w-full bg-purple-600 text-white p-3 rounded-lg font-bold hover:bg-purple-700 transition mt-6 shadow-lg">تأكيد الطلب</button>
+              </form>
+            </div>
+          </div>
+        </section>
+      `;
+
+      document.getElementById('order-form-el').addEventListener('submit', handleOrderSubmit);
+      document.getElementById('generate-moodboard-btn').addEventListener('click', () => {
+        const title = document.getElementById('ad-title').value;
+        const description = document.getElementById('description').value;
+        const colors = document.getElementById('colors').value;
+        handleGenerateMoodboard(title, description, colors);
+      });
+      const designTypeSelect = document.getElementById('design-type');
+      designTypeSelect.addEventListener('change', (e) => {
+        const selectedOption = e.target.options[e.target.selectedIndex];
+        const detailsContainer = document.getElementById('design-details');
+        if (selectedOption.value) {
+            const price = selectedOption.dataset.price;
+            const description = selectedOption.dataset.description;
+            detailsContainer.innerHTML = `
+                <p><strong>السعر:</strong> ${price}</p>
+                <p><strong>الوصف:</strong> ${description}</p>
+            `;
+            detailsContainer.classList.remove('hidden');
+        } else {
+            detailsContainer.classList.add('hidden');
+        }
+      });
+
+      if (preselectedDesign) {
+        const selectedOption = designTypeSelect.querySelector(`option[value="${preselectedDesign}"]`);
+        if (selectedOption) {
+            selectedOption.selected = true;
+            designTypeSelect.dispatchEvent(new Event('change'));
+        }
+      }
+
+      updateOrderForm();
+    };
+    
+    const updateOrderForm = () => {
+      const generateBtn = document.getElementById('generate-moodboard-btn');
+      if (generateBtn) {
+        generateBtn.disabled = isGeneratingMoodboard;
+        generateBtn.innerHTML = isGeneratingMoodboard ? `
+          <svg class="animate-spin-slow h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <span>جاري توليد لوحة الأفكار...</span>
+        ` : `
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-paintbrush"><path d="M18.37 2.63L14.33 6.67l-1.07 1.07a4.5 4.5 0 01-6.36 0L1.75 12.16a2 2 0 00-.58 1.43V22a2 2 0 002 2h6.41a2 2 0 001.42-.58l7.2-7.21a4.5 4.5 0 010-6.36l-1.07-1.07z"/><path d="M5.5 12.5l5-5"/></svg>
+          <span>مولّد لوحة الأفكار بالذكاء الاصطناعي</span>
+        `;
+      }
+      
+      const moodboardContainer = document.getElementById('moodboard-container');
+      if (moodboardContainer) {
+        if (generatedMoodboardUrl) {
+            moodboardContainer.innerHTML = `
+                <div class="mt-8">
+                    <h3 class="text-xl font-bold text-gray-800 mb-4 text-center">لوحة الأفكار المقترحة</h3>
+                    <img src="${generatedMoodboardUrl}" alt="Generated Moodboard" class="w-full h-auto rounded-lg shadow-xl animate-fadeIn" />
+                </div>
+            `;
+        } else {
+            moodboardContainer.innerHTML = '';
+        }
+      }
+    };
+
+    const renderDesignQuizView = () => {
+        const currentQuestion = quizState.questions[quizState.questionIndex];
+        
+        if (!currentQuestion) {
+            const answersArray = Object.values(quizState.answers).join('_');
+            const result = quizState.results[answersArray] || 'تصميم بوست';
+            
+            appContainer.innerHTML = `
+                <section class="py-20 px-6 bg-gray-100 animate-fadeIn">
+                    <div class="container mx-auto max-w-xl text-center bg-white p-8 rounded-2xl shadow-xl">
+                        <h2 class="text-3xl font-bold mb-4">النتيجة:</h2>
+                        <p class="text-lg text-gray-700 mb-6">بناءً على إجاباتك، يبدو أن أفضل خيار لك هو:</p>
+                        <h3 class="text-4xl font-extrabold text-purple-600 mb-8">${result}</h3>
+                        <button onclick="showView('order-form', '${result}')" class="bg-purple-600 text-white px-8 py-3 rounded-full text-lg font-bold hover:bg-purple-700 transition shadow-lg">اطلب الآن!</button>
+                        <button onclick="resetQuiz()" class="mt-4 text-gray-500 hover:underline">أعد الاختبار</button>
+                    </div>
+                </section>
+            `;
+            return;
+        }
+
+        appContainer.innerHTML = `
+            <section class="py-20 px-6 bg-gray-100 animate-fadeIn">
+                <div class="container mx-auto max-w-xl bg-white p-8 rounded-2xl shadow-xl">
+                    <h2 class="text-2xl font-bold mb-6 text-center text-gray-800">اختبار نوع التصميم</h2>
+                    <p class="text-lg text-gray-700 mb-8 text-center">${currentQuestion.text}</p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        ${currentQuestion.options.map(option => `
+                            <button onclick="answerQuiz(${quizState.questionIndex}, '${option.value}')" class="bg-purple-100 text-purple-800 p-6 rounded-xl font-bold hover:bg-purple-200 transition text-center shadow-md">
+                                ${option.text}
+                            </button>
+                        `).join('')}
+                    </div>
+                    <div class="text-center mt-6">
+                        <span class="text-gray-500 text-sm">السؤال ${quizState.questionIndex + 1} من ${quizState.questions.length}</span>
+                    </div>
+                </div>
+            </section>
+        `;
+    };
+    
+    window.answerQuiz = (questionIndex, answer) => {
+        quizState.answers[`q${questionIndex + 1}`] = answer;
+        quizState.questionIndex++;
+        showView('design-quiz');
+    };
+    
+    window.resetQuiz = () => {
+        quizState.questionIndex = 0;
+        quizState.answers = {};
+        showView('design-quiz');
+    };
+
+    const renderMyOrdersView = () => {
+      appContainer.innerHTML = `
+        <section class="py-20 px-6 bg-gray-100 animate-fadeIn">
+          <div class="container mx-auto max-w-2xl">
+            <h2 class="text-3xl font-bold text-center mb-8 text-gray-800">طلباتي السابقة</h2>
+            ${ordersList.length === 0 ? `
+              <p class="text-center text-gray-500">لا توجد طلبات سابقة. <button onclick="showView('order-form')" class="text-purple-600 font-bold hover:underline">اطلب تصميم الآن!</button></p>
+            ` : `
+              <ul class="space-y-4">
+                ${ordersList.map(order => `
+                  <li class="bg-white p-6 rounded-xl shadow-lg flex flex-col md:flex-row justify-between items-start md:items-center">
+                    <div class="mb-4 md:mb-0">
+                      <p class="font-bold">رقم الطلب: ${order.id}</p>
+                      <p class="text-gray-600">نوع التصميم: ${order.type}</p>
+                      <div class="flex items-center space-x-2 space-x-reverse mt-1">
+                        <p class="text-gray-600">الحالة:</p>
+                        <span class="font-bold ${order.status === 'جاهز' ? 'text-green-500' : 'text-yellow-500'}">${order.status}</span>
+                        <button onclick="handleReadStatus('${order.status}')" class="ml-2 text-purple-600 hover:text-purple-800 transition" title="قراءة الحالة بصوت عالٍ">
+                          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 ${isReadingStatus ? 'pulse-animation' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-volume-2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>
+                        </button>
+                      </div>
+                      ${order.status === 'جاهز' && order.designUrl ? `
+                        <div class="mt-4">
+                          <p class="font-bold">التصميم النهائي:</p>
+                          <a href="${order.designUrl}" target="_blank" rel="noopener noreferrer" class="text-blue-500 hover:underline break-all">${order.designUrl}</a>
+                        </div>
+                      ` : ''}
+                      ${order.status === 'جاهز' && order.privateMessage ? `
+                        <div class="mt-2 p-4 bg-gray-100 rounded-lg">
+                          <p class="font-bold">رسالة المصمم:</p>
+                          <p class="text-gray-700">${order.privateMessage}</p>
+                        </div>
+                      ` : ''}
+                    </div>
+                    <button onclick="showModal(${JSON.stringify(order).replace(/'/g, "\\'").replace(/"/g, "'")})" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition w-full md:w-auto">عرض التفاصيل</button>
+                  </li>
+                `).join('')}
+              </ul>
+            `}
+          </div>
+        </section>
+      `;
+    };
+
+    const renderAdminLoginView = () => {
+      appContainer.innerHTML = `
+        <div class="min-h-screen flex items-center justify-center bg-gray-200 p-6 animate-fadeIn">
+          <div class="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full">
+            <h2 class="text-2xl font-bold mb-4 text-center text-gray-800">تسجيل الدخول كمسؤول</h2>
+            <form id="admin-login-form">
+              <input type="password" name="password" class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:ring-2 focus:ring-purple-600" placeholder="أدخل رمز الدخول" required />
+              <button type="submit" class="w-full bg-purple-600 text-white p-3 rounded-lg font-bold hover:bg-purple-700 transition">دخول</button>
+            </form>
+          </div>
+        </div>
+      `;
+      document.getElementById('admin-login-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        handleAdminLogin(e.target.password.value);
+      });
+    };
+
+    const renderAdminDashboardView = (filterStatus = 'all') => {
+      const filteredOrders = filterStatus === 'all' ? ordersList : ordersList.filter(order => order.status === filterStatus);
+      
+      appContainer.innerHTML = `
+        <div class="min-h-screen bg-gray-200 p-6 animate-fadeIn">
+          <div class="container mx-auto">
+            <h1 class="text-4xl font-bold text-center mb-8 text-gray-800">لوحة تحكم المسؤول</h1>
+            <div class="bg-white p-6 rounded-2xl shadow-xl">
+              <div class="flex justify-center mb-6 space-x-4 space-x-reverse">
+                <button onclick="showView('admin-dashboard', 'all')" class="px-4 py-2 rounded-full font-bold transition ${filterStatus === 'all' ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}">جميع الطلبات</button>
+                <button onclick="showView('admin-dashboard', 'قيد التصميم')" class="px-4 py-2 rounded-full font-bold transition ${filterStatus === 'قيد التصميم' ? 'bg-yellow-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}">قيد التصميم</button>
+                <button onclick="showView('admin-dashboard', 'جاهز')" class="px-4 py-2 rounded-full font-bold transition ${filterStatus === 'جاهز' ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}">جاهز</button>
+              </div>
+              <h2 class="text-2xl font-bold mb-4">قائمة الطلبات</h2>
+              <ul class="space-y-4">
+                ${filteredOrders.length === 0 ? `
+                  <p class="text-center text-gray-500">لا توجد طلبات حالياً.</p>
+                ` : `
+                  ${filteredOrders.map(order => `
+                    <li class="bg-gray-100 p-4 rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center">
+                      <div>
+                        <p class="font-bold">رقم الطلب: ${order.id}</p>
+                        <p class="text-sm text-gray-600">من: <span class="font-mono text-gray-900">${order.userId}</span></p>
+                        <div class="flex items-center space-x-2 space-x-reverse mt-1">
+                            <p class="text-sm text-gray-600">الحالة:</p>
+                            <span class="font-bold ${order.status === 'جاهز' ? 'text-green-500' : 'text-yellow-500'}">${order.status}</span>
+                            <button onclick="handleReadStatus('${order.status}')" class="ml-2 text-purple-600 hover:text-purple-800 transition" title="قراءة الحالة بصوت عالٍ">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 ${isReadingStatus ? 'pulse-animation' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-volume-2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>
+                            </button>
+                        </div>
+                      </div>
+                      <button onclick="showModal(${JSON.stringify(order).replace(/'/g, "\\'").replace(/"/g, "'")})" class="bg-purple-600 text-white px-3 py-1 rounded-lg hover:bg-purple-700 transition w-full md:w-auto mt-4 md:mt-0">عرض</button>
+                    </li>
+                  `).join('')}
+                `}
+              </ul>
+            </div>
+          </div>
+        </div>
+      `;
+    };
+
+    const showModal = (order) => {
+        document.getElementById('modal-container').innerHTML = `
+            <div class="fixed inset-0 bg-gray-900 bg-opacity-70 flex items-center justify-center z-[50]">
+                <div class="bg-white p-8 rounded-2xl shadow-xl max-w-2xl w-full relative animate-fadeIn" dir="rtl">
+                    <button onclick="closeModal()" class="absolute top-4 left-4 text-gray-500 hover:text-gray-800 text-2xl font-bold">&times;</button>
+                    <h3 class="text-2xl font-bold mb-4 text-gray-800">تفاصيل الطلب</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-gray-700">
+                        <p><strong>رقم الطلب:</strong> ${order.id}</p>
+                        <p><strong>من المستخدم:</strong> <span class="font-mono text-gray-900">${order.userId}</span></p>
+                        <p><strong>نوع التصميم:</strong> ${order.type}</p>
+                        <p><strong>عنوان الإعلان:</strong> ${order.title}</p>
+                        <p><strong>رقم واتساب:</strong> ${order.userWhatsapp}</p>
+                        <p><strong>طريقة الدفع:</strong> ${order.paymentMethod || 'لم يتم التحديد'}</p>
+                        <p><strong>حالة الطلب:</strong> <span class="font-bold ${order.status === 'جاهز' ? 'text-green-500' : 'text-yellow-500'}">${order.status}</span></p>
+                        ${order.paymentReceiptUrl ? `<p><strong>وصل التحويل:</strong> <a href="${order.paymentReceiptUrl}" target="_blank" class="text-blue-500 hover:underline">عرض الوصل</a></p>` : ''}
+                    </div>
+                    <div class="mt-4 p-4 bg-gray-100 rounded-xl">
+                      <p class="font-bold text-gray-800">الوصف:</p>
+                      <p>${order.description}</p>
+                    </div>
+                    ${order.colors ? `<div class="mt-4 p-4 bg-gray-100 rounded-xl"><p class="font-bold text-gray-800">الألوان المطلوبة:</p><p>${order.colors}</p></div>` : ''}
+
+                    ${isAdmin ? `
+                        <div class="mt-6 flex flex-col space-y-4">
+                            <a href="https://wa.me/${order.userWhatsapp}?text=${encodeURIComponent('مرحباً! لقد تم استلام طلب التصميم الخاص بك رقم ' + order.id + '. لمناقشة التفاصيل والدفع، يرجى الرد على هذه الرسالة.')}" target="_blank" class="w-full bg-green-500 text-white p-3 rounded-lg font-bold hover:bg-green-600 transition text-center">
+                                فتح محادثة واتساب
+                            </a>
+                            ${order.status !== 'جاهز' ? `
+                                <input type="text" id="design-url-input" value="${order.designUrl || ''}" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600" placeholder="رابط التصميم النهائي (URL)" />
+                                <textarea id="private-message-input" rows="3" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600" placeholder="رسالة خاصة للمستخدم (اختياري)">${order.privateMessage || ''}</textarea>
+                                <button onclick="handleDeliverDesign(${JSON.stringify(order).replace(/'/g, "\\'").replace(/"/g, "'")}, document.getElementById('design-url-input').value, document.getElementById('private-message-input').value)" class="w-full bg-purple-600 text-white p-3 rounded-lg font-bold hover:bg-purple-700 transition">إرسال التصميم وتغيير الحالة</button>
+                            ` : ''}
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+    };
+    
+    const showOrderConfirmationModal = (orderData) => {
+      document.getElementById('modal-container').innerHTML = `
+        <div class="fixed inset-0 bg-gray-900 bg-opacity-70 flex items-center justify-center z-[50]">
+          <div class="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full relative animate-fadeIn" dir="rtl">
+            <h3 class="text-2xl font-bold mb-4 text-center text-gray-800">تأكيد طلب التصميم</h3>
+            <div class="space-y-2 text-gray-700 mb-6">
+              <p><strong>نوع التصميم:</strong> ${orderData.type}</p>
+              <p><strong>عنوان الإعلان:</strong> ${orderData.title}</p>
+              <p><strong>رقم واتساب:</strong> ${orderData.userWhatsapp}</p>
+              <p><strong>طريقة الدفع:</strong> ${orderData.paymentMethod}</p>
+              <p><strong>الألوان المطلوبة:</strong> ${orderData.colors || 'لا يوجد'}</p>
+            </div>
+            <div class="flex justify-between space-x-4 space-x-reverse">
+              <button onclick="closeModal()" class="flex-1 bg-gray-400 text-white p-3 rounded-lg font-bold hover:bg-gray-500 transition">إلغاء</button>
+              <button onclick="confirmAndSubmitOrder(${JSON.stringify(orderData).replace(/'/g, "\\'").replace(/"/g, "'")})" id="final-submit-btn" class="flex-1 bg-purple-600 text-white p-3 rounded-lg font-bold hover:bg-purple-700 transition">
+                تأكيد وإرسال
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    };
+    
+    const closeModal = () => {
+        document.getElementById('modal-container').innerHTML = '';
+    };
+
+    // --- معالجات الأحداث ---
+    const handleOrderSubmit = async (e) => {
+      e.preventDefault();
+      if (!user) {
+        showToast('يجب أن تكون مسجلاً لإرسال طلب.', 'error');
+        return;
+      }
+      
+      const formData = new FormData(e.target);
+      const orderData = {
+        type: formData.get('design-type'),
+        title: formData.get('ad-title'),
+        userWhatsapp: formData.get('user-whatsapp'),
+        description: formData.get('description'),
+        colors: formData.get('colors'),
+        paymentMethod: formData.get('payment-method'),
+        paymentReceiptUrl: formData.get('payment-receipt'),
+        status: 'قيد التصميم',
+        designUrl: null,
+        privateMessage: null,
+        createdAt: new Date(),
+        userId: user.uid,
+      };
+
+      showOrderConfirmationModal(orderData);
+    };
+    
+    const confirmAndSubmitOrder = async (orderData) => {
+      const submitBtn = document.getElementById('final-submit-btn');
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = 'جاري الإرسال...';
+      
+      try {
+        await addDoc(ordersCollectionRef(), orderData);
+        
+        const userDocRef = doc(usersCollectionRef(), user.uid);
+        const newPoints = loyaltyPoints + 1;
+        await setDoc(userDocRef, { loyaltyPoints: newPoints }, { merge: true });
+
+        showToast('تم استلام طلبك بنجاح!', 'success');
+        document.getElementById('order-form-el').reset();
+        closeModal();
+        showView('home');
+      } catch (error) {
+        console.error("Error submitting order:", error);
+        showToast('حدث خطأ أثناء إرسال الطلب.', 'error');
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = 'تأكيد وإرسال';
+      }
+    };
+
+
+    const handleAdminLogin = async (password) => {
+      if (!user) {
+        showToast('خطأ في المصادقة.', 'error');
+        return;
+      }
+
+      if (password === adminPassword) {
+        const userDocRef = doc(usersCollectionRef(), user.uid);
+        await setDoc(userDocRef, { role: 'admin' }, { merge: true });
+        isAdmin = true;
+        showToast('تم تسجيل الدخول كمسؤول بنجاح!', 'success');
+        showView('admin-dashboard');
+        updateNavbar();
+      } else {
+        showToast('رمز الدخول غير صحيح.', 'error');
+      }
+    };
+
+    const handleLogout = async () => {
+      if (unsubscribeUser) unsubscribeUser();
+      if (unsubscribeItems) unsubscribeItems();
+      if (unsubscribeOffers) unsubscribeOffers();
+      if (unsubscribeOrders) unsubscribeOrders();
+
+      await signOut(auth);
+      user = null;
+      isAdmin = false;
+      loyaltyPoints = 0;
+      ordersList = [];
+      showToast('تم تسجيل الخروج بنجاح.', 'info');
+      updateNavbar();
+      showView('home');
+    };
+
+    const handleDeliverDesign = async (order, designUrl, privateMessage) => {
+      try {
+        if (!user || !isAdmin) {
+          showToast('خطأ في الأذونات.', 'error');
+          return;
+        }
+        
+        const orderDocRef = doc(ordersCollectionRef(), order.id);
+        
+        await updateDoc(orderDocRef, {
+          status: 'جاهز',
+          designUrl,
+          privateMessage,
+        });
+        showToast('تم تسليم التصميم بنجاح!', 'success');
+        closeModal();
+        updateViews(); // لتحديث لوحة التحكم
+      } catch (error) {
+        console.error("Error delivering design:", error);
+        showToast('حدث خطأ أثناء تسليم التصميم.', 'error');
+      }
+    };
+    
+    // إظهار الوظائف في النطاق العام للمستمعين في HTML
+    window.showView = showView;
+    window.handleLogout = handleLogout;
+    window.handleAdminLogin = handleAdminLogin;
+    window.handleDeliverDesign = handleDeliverDesign;
+    window.showModal = showModal;
+    window.closeModal = closeModal;
+    window.handleReadStatus = handleReadStatus;
+    window.handleGenerateMoodboard = handleGenerateMoodboard;
+    window.confirmAndSubmitOrder = confirmAndSubmitOrder;
+    window.answerQuiz = answerQuiz;
+    window.resetQuiz = resetQuiz;
+    
+    // --- الإعداد الأولي ومستمعي البيانات ---
+    const setupListeners = (currentUser) => {
+        if (unsubscribeUser) unsubscribeUser();
+        if (unsubscribeItems) unsubscribeItems();
+        if (unsubscribeOffers) unsubscribeOffers();
+        if (unsubscribeOrders) unsubscribeOrders();
+
+        const userDocRef = doc(usersCollectionRef(), currentUser.uid);
+        unsubscribeUser = onSnapshot(userDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+                const userData = docSnap.data();
+                isAdmin = userData.role === 'admin';
+                loyaltyPoints = userData.loyaltyPoints || 0;
+            } else {
+                isAdmin = false;
+                loyaltyPoints = 0;
+                setDoc(userDocRef, { loyaltyPoints: 0, role: 'user' }, { merge: true }).catch(console.error);
+            }
+            updateNavbar();
+            updateViews();
+        }, (error) => {
+            console.error("Error in user snapshot listener:", error);
+            showToast('خطأ في جلب بيانات المستخدم.', 'error');
+        });
+
+        unsubscribeItems = onSnapshot(itemsCollectionRef(), (snapshot) => {
+            itemsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            updateViews();
+        }, (error) => {
+            console.error("Error in items snapshot listener:", error);
+            showToast('خطأ في جلب قائمة الخدمات.', 'error');
+        });
+
+        unsubscribeOffers = onSnapshot(offersCollectionRef(), (snapshot) => {
+            offersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            updateViews();
+        }, (error) => {
+            console.error("Error in offers snapshot listener:", error);
+            showToast('خطأ في جلب العروض.', 'error');
+        });
+
+        const publicOrdersCollectionRef = collection(db, `${publicPath}/orders`);
+        
+        unsubscribeOrders = onSnapshot(publicOrdersCollectionRef, (snapshot) => {
+            ordersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            updateViews();
+        }, (error) => {
+            console.error("Error in orders snapshot listener:", error);
+            showToast('خطأ في جلب الطلبات.', 'error');
+        });
+    }
+
+    const cleanupListeners = () => {
+        if (unsubscribeUser) unsubscribeUser();
+        if (unsubscribeItems) unsubscribeItems();
+        if (unsubscribeOffers) unsubscribeOffers();
+        if (unsubscribeOrders) unsubscribeOrders();
+    };
+
+    onAuthStateChanged(auth, async (currentUser) => {
+      user = currentUser;
+      updateNavbar();
+
+      if (currentUser) {
+        if (!isInitialized) {
+          await initializeData();
+          isInitialized = true;
+        }
+        setupListeners(currentUser);
+      } else {
+        cleanupListeners();
+        user = null;
+        isAdmin = false;
+        loyaltyPoints = 0;
+        ordersList = [];
+        updateNavbar();
+        showView('home');
+      }
+    });
+
+    const setupAuth = async () => {
+      try {
+        if (initialAuthToken) {
+          await signInWithCustomToken(auth, initialAuthToken);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Authentication error:", error);
+        showToast('فشل تسجيل الدخول التلقائي.', 'error');
+      }
+    };
+    
+    window.onload = () => {
+      setupAuth();
+    };
+
+  </script>
+</head>
+<body class="text-right" dir="rtl">
+  <div id="navbar" class="bg-white shadow-sm sticky top-0 z-40"></div>
+  <main id="app-container" class="min-h-screen"></main>
+  <div id="modal-container"></div>
+  <div id="notifications-container" class="fixed bottom-4 right-4 z-[50]"></div>
+</body>
+</html>
